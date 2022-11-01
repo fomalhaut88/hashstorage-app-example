@@ -163,6 +163,8 @@ So now we will consider the use of hashstorage-cli in `App.vue`. First of all, w
 
 At the begining, after mounting the component we need to check the existing profile in the `localStorage`. If it already exists, we show the textarea and allow user to modify it as many times as he wants. To save the current state of the textarea there is a button `Save`. If the profile does not exist, we show the login popup and suggest the user to enter his username or password. The backend is unable to check whether it is correct or not because the credentials will never be passed anywhere from the client side, but it is possible to check there is a record on the backend that corresponds to the entered username and password. So if nothing is found we can conclude that such user does not exist yet or he just entered wrong username or password. Thus if there is no record on the backend side, we ask the user to enter his credentials again or continue as a new user with empty data. Obviously, Hashstorage allows two different users to have same usernames but different passwords, it can not be forbidden.
 
+![Hashstorage application flow](https://github.com/fomalhaut88/hashstorage-app-example/blob/master/screenshots/hashstorage-app-flow.png?raw=true)
+
 On mounted step we check the profile and if it exists we try to load the existing data from the backend. In the comments I wrote the details what is necessary to do.
 
 ```javascript
@@ -176,28 +178,15 @@ On mounted step we check the profile and if it exists we try to load the existin
           this.isLoginModalShown = true
         }
         else {
-          try {
-            // Try to fetch the block of the data
-            const blockJson = await this.$hscm.profile.getBlockJson(
-              this.$hscm.api, "group_default", "key_default"
+          // Try to load block
+          const success = await this.loadBlock()
+
+          // If block not found create and save an empty one
+          if (!success) {
+            this.block = this.$hscm.hsc.Block.new(
+              this.$hscm.profile.publicKey(), "group_default", "key_default"
             )
-
-            // Create a block instance
-            this.block = this.$hscm.hsc.Block.fromBlockJson(blockJson)
-
-            // Get encrypted data from the block
-            const encryptedText = this.block.data()
-
-            // Decrypt the data with the private key
-            this.text = aes256.decrypt(this.$hscm.profile.privateKey(), encryptedText)
-          } catch (err) {
-            // If block not found create and save an empty one
-            if (err.status == 404) {
-              this.block = this.$hscm.hsc.Block.new(
-                this.$hscm.profile.publicKey(), "group_default", "key_default"
-              )
-              await this.saveBlock()
-            }
+            await this.saveBlock()
           }
         }
       }, 100)
@@ -206,38 +195,46 @@ On mounted step we check the profile and if it exists we try to load the existin
     ...
 ```
 
-In this project we have the only block for each user, so we define the constant group and key names for the block. If we had many blocks we would have a more complex approach to name groups and keys. Hashstorage is actually a key-value storage, and the groups are needed to group some keys together.
-
-On the register stage we are to save the profile in `localStorage`:
+We load and save the block with these functions. Here we interact with Hashstorage backend.
 
 ```javascript
       ...
 
-      register() {
-        // Create a new profile instance
-        this.$hscm.profile = this.$hscm.hsc.Profile.new(
-          this.$hscm.appId, this.username, this.password
-        )
+      async loadBlock() {
+        try {
+          // Try to fetch the block of the data
+          const blockJson = await this.$hscm.profile.getBlockJson(
+            this.$hscm.api, "group_default", "key_default"
+          )
 
-        // Save profile into localStorage
-        this.$hscm.profile.save()
+          // Create a block instance
+          this.block = this.$hscm.hsc.Block.fromBlockJson(blockJson)
 
-        // Close the modal
-        this.isRegisterModalShown = false
+          // Get encrypted data from the block
+          const encryptedText = this.block.data()
+
+          // Decrypt the data with the private key
+          this.text = aes256.decrypt(
+            this.$hscm.profile.privateKey(), encryptedText
+          ).trim()
+
+          // Return true in the end
+          return true
+        } catch (err) {
+          // If block not found return false
+          if (err.status == 404) {
+            return false
+          } else {
+            throw err
+          }
+        }
       },
-
-      ...
-```
-
-And the last interesting place to look at is the saving data by the button `Save`:
-
-```javascript
-      ...
 
       async saveBlock() {
         // Encrypt the text with the private key
         const encryptedText = aes256.encrypt(
-          this.$hscm.profile.privateKey(), this.text
+          this.$hscm.profile.privateKey(),
+          this.text + ((this.text.length) ? '' : ' ')
         )
 
         // Set the data in the block
@@ -245,13 +242,66 @@ And the last interesting place to look at is the saving data by the button `Save
 
         // Save the block
         await this.block.save(this.$hscm.api, this.$hscm.profile)
+      },
 
-        // Show success
-        this.$buefy.dialog.alert({
-          title: 'Success',
-          type: 'is-success',
-          message: "Saved successfully",
-        })
+      ...
+```
+
+In this project we have the only block for each user, so we define the constant group and key names for the block. If we had many blocks we would have a more complex approach to name groups and keys. Hashstorage is actually a key-value storage, and the groups are needed to group some keys together.
+
+On the login stage we check the existing record on the backend according to the application flow. If it is not found we show the registration popup.
+
+```javascript
+      ...
+
+      async login() {
+        if ((this.username != "") && (this.password != "")) {
+          // Create a new profile instance
+          this.$hscm.profile = this.$hscm.hsc.Profile.new(
+            this.$hscm.appId, this.username, this.password
+          )
+
+          // Try to load block
+          const success = await this.loadBlock()
+
+          if (success) {
+            // Save profile into localStorage
+            this.$hscm.profile.save()
+
+            // Close login popup
+            this.isLoginModalShown = false
+          } else {
+            // Close login popup
+            this.isLoginModalShown = false
+
+            // Show register popup
+            this.isRegisterModalShown = true
+          }
+        }
+      },
+
+      ...
+```
+
+And finally, on the registration stage we are to save the profile in `localStorage` and an empty block on the backend:
+
+```javascript
+      ...
+
+      async register() {
+        // Save profile into localStorage
+        this.$hscm.profile.save()
+
+        // Create an empty block
+        this.block = this.$hscm.hsc.Block.new(
+          this.$hscm.profile.publicKey(), "group_default", "key_default"
+        )
+
+        // Save empty block
+        await this.saveBlock()
+
+        // Close the modal
+        this.isRegisterModalShown = false
       },
 
       ...

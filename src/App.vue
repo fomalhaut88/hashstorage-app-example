@@ -8,7 +8,7 @@
         <b-input type="textarea" v-model="text" />
       </b-field>
       <b-field>
-        <b-button type="is-primary" label="Save" @click="saveBlock()" />
+        <b-button type="is-primary" label="Save" @click="saveClick()" />
       </b-field>
     </section>
 
@@ -70,35 +70,91 @@
       }
     },
     methods: {
-      login() {
+      async login() {
         if ((this.username != "") && (this.password != "")) {
-          this.isLoginModalShown = false
-          this.isRegisterModalShown = true
+          // Create a new profile instance
+          this.$hscm.profile = this.$hscm.hsc.Profile.new(
+            this.$hscm.appId, this.username, this.password
+          )
+
+          // Try to load block
+          const success = await this.loadBlock()
+
+          if (success) {
+            // Save profile into localStorage
+            this.$hscm.profile.save()
+
+            // Close login popup
+            this.isLoginModalShown = false
+          } else {
+            // Close login popup
+            this.isLoginModalShown = false
+
+            // Show register popup
+            this.isRegisterModalShown = true
+          }
         }
       },
 
       loginAgain() {
+        // Close register popup
         this.isRegisterModalShown = false
+
+        // Show login popup
         this.isLoginModalShown = true
       },
 
-      register() {
-        // Create a new profile instance
-        this.$hscm.profile = this.$hscm.hsc.Profile.new(
-          this.$hscm.appId, this.username, this.password
-        )
-
+      async register() {
         // Save profile into localStorage
         this.$hscm.profile.save()
+
+        // Create an empty block
+        this.block = this.$hscm.hsc.Block.new(
+          this.$hscm.profile.publicKey(), "group_default", "key_default"
+        )
+
+        // Save empty block
+        await this.saveBlock()
 
         // Close the modal
         this.isRegisterModalShown = false
       },
 
+      async loadBlock() {
+        try {
+          // Try to fetch the block of the data
+          const blockJson = await this.$hscm.profile.getBlockJson(
+            this.$hscm.api, "group_default", "key_default"
+          )
+
+          // Create a block instance
+          this.block = this.$hscm.hsc.Block.fromBlockJson(blockJson)
+
+          // Get encrypted data from the block
+          const encryptedText = this.block.data()
+
+          // Decrypt the data with the private key
+          this.text = aes256.decrypt(
+            this.$hscm.profile.privateKey(), encryptedText
+          ).trim()
+
+          // Return true in the end
+          return true
+        } catch (err) {
+          // If block not found return false
+          if (err.status == 404) {
+            return false
+          } else {
+            throw err
+          }
+        }
+      },
+
       async saveBlock() {
         // Encrypt the text with the private key
         const encryptedText = aes256.encrypt(
-          this.$hscm.profile.privateKey(), this.text
+          this.$hscm.profile.privateKey(),
+          this.text + ((this.text.length) ? '' : ' ')
         )
 
         // Set the data in the block
@@ -106,6 +162,11 @@
 
         // Save the block
         await this.block.save(this.$hscm.api, this.$hscm.profile)
+      },
+
+      async saveClick() {
+        // Save current block
+        await this.saveBlock()
 
         // Show success
         this.$buefy.dialog.alert({
@@ -123,28 +184,15 @@
           this.isLoginModalShown = true
         }
         else {
-          try {
-            // Try to fetch the block of the data
-            const blockJson = await this.$hscm.profile.getBlockJson(
-              this.$hscm.api, "group_default", "key_default"
+          // Try to load block
+          const success = await this.loadBlock()
+
+          // If block not found create and save an empty one
+          if (!success) {
+            this.block = this.$hscm.hsc.Block.new(
+              this.$hscm.profile.publicKey(), "group_default", "key_default"
             )
-
-            // Create a block instance
-            this.block = this.$hscm.hsc.Block.fromBlockJson(blockJson)
-
-            // Get encrypted data from the block
-            const encryptedText = this.block.data()
-
-            // Decrypt the data with the private key
-            this.text = aes256.decrypt(this.$hscm.profile.privateKey(), encryptedText)
-          } catch (err) {
-            // If block not found create and save an empty one
-            if (err.status == 404) {
-              this.block = this.$hscm.hsc.Block.new(
-                this.$hscm.profile.publicKey(), "group_default", "key_default"
-              )
-              await this.saveBlock()
-            }
+            await this.saveBlock()
           }
         }
       }, 100)
